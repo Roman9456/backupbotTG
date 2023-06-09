@@ -8,6 +8,7 @@ from datetime import datetime
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 import yadisk
+from tqdm import tqdm
 
 TG_TOKEN_FILE = 'TGtoken.txt'
 YD_TOKEN_FILE = 'YDtoken.txt'
@@ -36,20 +37,26 @@ def get_token(file_path):
 def upload_files_to_yandex_disk(folder_path, token):
     y = yadisk.YaDisk(token=token)
     y.mkdir(folder_path)
-    for file_name in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, file_name)
-        y.upload(file_path, f"{folder_path}/{file_name}")
+    files = os.listdir(folder_path)
+    with tqdm(total=len(files), desc='Uploading to Yandex.Disk') as pbar:
+        for file_name in files:
+            file_path = os.path.join(folder_path, file_name)
+            y.upload(file_path, f"{folder_path}/{file_name}")
+            pbar.update(1)
 
 def upload_files_to_google_drive(folder_path):
     gauth = GoogleAuth()
     gauth.LoadClientConfigFile('client_secrets.json')
     gauth.LocalWebserverAuth()
     drive = GoogleDrive(gauth)
-    for file_name in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, file_name)
-        gfile = drive.CreateFile({'title': file_name})
-        gfile.SetContentFile(file_path)
-        gfile.Upload()
+    files = os.listdir(folder_path)
+    with tqdm(total=len(files), desc='Uploading to Google Drive') as pbar:
+        for file_name in files:
+            file_path = os.path.join(folder_path, file_name)
+            gfile = drive.CreateFile({'title': file_name})
+            gfile.SetContentFile(file_path)
+            gfile.Upload()
+            pbar.update(1)
 
 # Start the bot
 bot = telebot.TeleBot(get_token(TG_TOKEN_FILE))
@@ -80,9 +87,41 @@ def save_files(message):
         file_ids.append(message.document.file_id)
         bot.reply_to(message, "Please send me more files or press the 'done' button to finish.", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton('done')))
         bot.register_next_step_handler(message, process_files, file_ids)
+    elif message.photo:  # Loading photos
+        file_ids = []
+        file_ids.append(message.photo[-1].file_id)
+        bot.reply_to(message, "Please send me more photos or press the 'done' button to finish.", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton('done')))
+        bot.register_next_step_handler(message, process_photos, file_ids)
     else:
-        bot.reply_to(message, "No file found in the message.")
-        logging.warning("No file found in the message.")
+        bot.reply_to(message, "No file or photo found in the message.")
+        logging.warning("No file or photo found in the message.") 
+
+def process_photos(message, file_ids):
+    if message.text == 'done':
+        with tqdm(total=len(file_ids), desc="Saving photos") as pbar:
+            for file_id in file_ids:
+                file_info = bot.get_file(file_id)
+                file_path = file_info.file_path
+                file_name = file_path.split('/')[-1]
+                file_unique_id = str(uuid.uuid4())
+                backup_path = os.path.join(folder_path, f"{file_unique_id}_{file_name}")
+                file_url = f"https://api.telegram.org/file/bot{get_token(TG_TOKEN_FILE)}/{file_path}"
+                response = requests.get(file_url)
+                with open(backup_path, 'wb') as file:
+                    file.write(response.content)
+                pbar.update(1)
+
+        bot.reply_to(message, "All files saved successfully.")
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(types.KeyboardButton('Yes'))
+        markup.add(types.KeyboardButton('No'))
+        bot.reply_to(message, "Would you like to upload the files to Yandex.Disk?", reply_markup=markup)
+        bot.register_next_step_handler(message, upload_to_yandex_disk)
+    else:
+        file_ids.append(message.photo[-1].file_id)
+        bot.reply_to(message, "Please send me more photos or press the 'done' button to finish.", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton('done')))
+        bot.register_next_step_handler(message, process_photos, file_ids)
+
 
 def process_files(message, file_ids):
     if message.text == 'done':
@@ -146,5 +185,3 @@ def upload_to_google_drive(message):
     bot.reply_to(message, "What would you like to do next?", reply_markup=markup)
 
 bot.polling()
-
-
